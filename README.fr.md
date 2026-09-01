@@ -22,6 +22,8 @@ Le pipeline part des horaires GTFS ouverts de SNCF Voyageurs et de Transilien, l
 apparie au réseau ferré d'OpenStreetMap, et publie sept journées consultables. Aucune clé
 d'API n'est nécessaire, à aucune étape.
 
+<video src="https://github.com/user-attachments/assets/4fbe3f7e-87a2-4f77-960f-a57872ff52e9" width="100%"></video>
+
 ## Résultat
 
 Chiffres du **mercredi 26 août 2026**, journée prise pour illustrer. Le pipeline étant

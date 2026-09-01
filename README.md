@@ -21,6 +21,8 @@ The pipeline starts from the open GTFS timetables of SNCF Voyageurs and Transili
 them to the OpenStreetMap rail network, and publishes seven browsable days. No API key is
 required at any step.
 
+<video src="https://github.com/user-attachments/assets/4fbe3f7e-87a2-4f77-960f-a57872ff52e9" width="100%"></video>
+
 ## Result
 
 Figures for **Wednesday 26 August 2026**, the day used for illustration. The pipeline is
