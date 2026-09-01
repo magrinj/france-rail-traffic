@@ -1,0 +1,7 @@
+# Versions epinglees: celles reellement utilisees pour produire le rendu du depot.
+# Regenerer avec: .venv/bin/python -m pip freeze | grep -iE 'pandas|numpy|shapely'
+pandas==3.0.5
+numpy==2.4.6
+shapely==2.1.2
+gtfs-realtime-bindings==2.2.0
+scipy==1.17.1

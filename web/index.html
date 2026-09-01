@@ -1,0 +1,965 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Trafic ferroviaire français — 24 h</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet"
+      integrity="sha384-MinO0mNliZ3vwppuPOUnGa+iq619pfMhLVUXfC4LHwSCvF9H+6P/KO4Q7qBOYV5V"
+      crossorigin="anonymous" referrerpolicy="no-referrer">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"
+        integrity="sha384-SYKAG6cglRMN0RVvhNeBY0r3FYKNOJtznwA0v7B5Vp9tr31xAHsZC0DqkQ/pZDmj"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://unpkg.com/deck.gl@9.0.35/dist.min.js"
+        integrity="sha384-Vr15y1r5cZ83amAjUB8zTA39xVjYBmxu/q5yF+gyhKdcf73hnNmOA1FkvIZGqLmX"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style>
+  :root{
+    --hs:#3b82f6; --ld:#f97316; --ni:#facc15; --re:#22c55e;
+    --bg:#07090d; --fg:#e8edf5; --dim:#8a94a6;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font:14px/1.4 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif}
+  #map{position:absolute;inset:0}
+  /* Near-opaque background: at 84 % the train dots showed through the panels and
+     landed on the clock. Explicit z-index too: deck.gl appends its canvas to the
+     DOM AFTER the panels, so without it the dots draw over the clock. */
+  .panel{position:absolute;z-index:10;background:rgba(9,12,18,.965);backdrop-filter:blur(16px);
+    border:1px solid rgba(255,255,255,.09);border-radius:12px}
+  button{background:rgba(255,255,255,.07);color:var(--fg);border:1px solid rgba(255,255,255,.12);
+    border-radius:8px;cursor:pointer;font:inherit}
+  button:hover{background:rgba(255,255,255,.15)}
+
+  /* ---- header, top right: centred at the top it hid northern France ---- */
+  #tete{top:16px;right:16px;padding:14px 18px 12px;text-align:center;width:268px}
+  #clock{font:600 40px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-1px;
+    font-variant-numeric:tabular-nums}
+  #date{color:var(--dim);font-size:11.5px;margin-top:4px;text-transform:capitalize}
+  #total{margin-top:9px;font-size:11.5px;color:var(--dim)}
+  #total b{color:var(--fg);font:600 15px/1 ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums}
+  #collections{display:flex;gap:4px;margin-top:11px;justify-content:center}
+  #collections button{padding:4px 12px;font-size:10.5px;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--dim);border-radius:7px;border-color:transparent;
+    background:rgba(255,255,255,.05)}
+  #collections button[aria-selected="true"]{background:var(--hs);color:#fff}
+  #note-col{margin-top:9px;font-size:9.5px;line-height:1.4;color:var(--dim);max-width:250px}
+  #note-col:empty{display:none}
+  #days{display:flex;gap:3px;margin-top:9px}
+  #days button{flex:1;padding:4px 0 3px;border-radius:7px;border-color:transparent;
+    background:rgba(255,255,255,.05);display:flex;flex-direction:column;align-items:center;gap:2px}
+  #days .j{font-size:8.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  #days .n{font:600 13px/1 ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+  #days .b{height:8px;display:flex;align-items:flex-end}
+  #days .v{width:16px;border-radius:2px;background:var(--hs);opacity:.55}
+  #days button[aria-selected="true"]{background:var(--hs);border-color:rgba(255,255,255,.3)}
+  #days button[aria-selected="true"] .j{color:rgba(255,255,255,.85)}
+  #days button[aria-selected="true"] .v{background:#fff;opacity:.9}
+  #days button.today{border-color:rgba(255,255,255,.26)}
+
+  /* ---- layers, top left ---- */
+  /* The "what am I looking at" block: territory first, then display. */
+  #calques{top:16px;left:16px;padding:6px;width:214px}
+  #collections{display:flex;gap:4px}
+  #collections button{flex:1;padding:9px 0;font-size:12.5px;font-weight:600;
+    letter-spacing:.03em;color:#cfd7e3;border-color:transparent;white-space:nowrap}
+  #collections button[aria-selected="true"]{background:var(--hs);color:#fff}
+  /* Switches, not a segmented group: Trains and Network are INDEPENDENT, whereas
+     a segmented group - France/Corsica just above - means "pick one or the other".
+     The same visual language for two opposite meanings made the state illegible. */
+  #affichage{margin-top:5px;padding-top:5px;border-top:1px solid rgba(255,255,255,.08)}
+  .bascule{display:flex;align-items:center;width:100%;padding:7px 8px;background:none;
+    border:0;border-radius:8px;color:var(--dim);font-size:12px}
+  .bascule:hover{background:rgba(255,255,255,.07);color:#cfd7e3}
+  .bascule[aria-pressed="true"]{color:var(--fg)}
+  .bascule i{margin-left:auto;width:30px;height:17px;border-radius:9px;flex:none;
+    background:rgba(255,255,255,.14);position:relative;transition:background .15s}
+  .bascule i::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;
+    border-radius:50%;background:#8a94a6;transition:transform .15s,background .15s}
+  .bascule[aria-pressed="true"] i{background:var(--hs)}
+  .bascule[aria-pressed="true"] i::after{transform:translateX(13px);background:#fff}
+
+  /* ---- actions, top right ---- */
+  #actions{display:flex;gap:5px;margin-top:11px;padding-top:11px;
+    border-top:1px solid rgba(255,255,255,.08)}
+  #actions button{flex:1;padding:7px 0;font-size:11px;color:var(--dim);
+    border-color:transparent;background:rgba(255,255,255,.06);white-space:nowrap}
+  #actions button:hover{color:#fff;background:rgba(255,255,255,.14)}
+  #actions button[aria-pressed="true"]{background:var(--hs);color:#fff}
+
+  /* ---- legend and filters, bottom left ---- */
+  #legende{bottom:16px;left:16px;width:224px;padding:14px 15px}
+  .cat{display:block;width:100%;padding:0;background:none;border:0;text-align:left;
+    margin-bottom:10px;transition:opacity .12s}
+  .cat:hover{opacity:.85}
+  .cat[aria-pressed="false"]{opacity:.3}
+  .cat .t{display:flex;align-items:baseline;gap:7px;margin-bottom:4px}
+  .cat .t i{width:7px;height:7px;border-radius:50%;background:currentColor;
+    box-shadow:0 0 7px currentColor;flex:none}
+  .cat .t span{font-size:11.5px;color:#cfd7e3}
+  .cat .t b{margin-left:auto;font:600 13px/1 ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums}
+  .cat .g{height:3px;border-radius:2px;background:rgba(255,255,255,.09);overflow:hidden}
+  .cat .g i{display:block;height:100%;border-radius:2px;background:currentColor;
+    transition:width .18s linear}
+  #odos{display:flex;gap:14px;margin-top:12px;padding-top:11px;
+    border-top:1px solid rgba(255,255,255,.08)}
+  .odo b{display:block;font:600 14px/1.1 ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums}
+  .odo small{display:block;color:var(--dim);font-size:8.5px;text-transform:uppercase;
+    letter-spacing:.06em;margin-top:3px}
+
+  /* ---- figures panel, right: wide enough to stay readable ---- */
+  #chiffres{right:16px;width:330px;padding:16px 18px 15px;max-height:calc(100vh - 190px);
+    overflow-y:auto}
+  #chiffres[hidden]{display:none}
+  #chiffres h2{margin:0 0 12px;font-size:10px;font-weight:600;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--dim);display:flex;align-items:center}
+  #fermer-chiffres{margin-left:auto;width:22px;height:22px;font-size:10px;line-height:1}
+  #desserte{margin:0;padding-left:16px}
+  #desserte li{font-size:12.5px;line-height:1.55;color:#c1cad8;margin-bottom:9px}
+  #desserte li:last-child{margin-bottom:0}
+  #desserte b{color:var(--fg);font-weight:600}
+  #desserte .attente{color:var(--dim);list-style:none;margin-left:-16px}
+  #chiffres .note{margin:12px 0 0;padding-top:11px;font-size:10.5px;line-height:1.5;
+    color:var(--dim);border-top:1px solid rgba(255,255,255,.08)}
+
+  /* ---- credit, bottom right ---- */
+  #credit{bottom:46px;right:16px;padding:8px 13px;font-size:11px;color:#cfd7e3;
+    text-decoration:none;white-space:nowrap}
+  #credit:hover{color:#fff;background:rgba(255,255,255,.13)}
+  #credit span{color:#ff5470}
+  body.busy #tete,body.busy #legende,body.busy #calques,body.busy #actions,
+  body.busy #chiffres{opacity:.5;pointer-events:none}
+
+  /* Side panel, not a full-screen modal: a modal covered the whole map and
+     blocked interaction for what is only reading material. */
+  #modal[hidden]{display:none}
+  #modal{right:16px;width:378px;max-height:calc(100vh - 190px);overflow-y:auto;
+    padding:16px 20px 18px;z-index:20}
+  #modal h1{margin:0 0 14px;font-size:10px;font-weight:600;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--dim);display:flex;align-items:center}
+  #fermer{margin-left:auto;width:22px;height:22px;font-size:10px;line-height:1;flex:none}
+  #modal h3{margin:16px 0 5px;font-size:10px;font-weight:600;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--hs)}
+  #modal p,#modal li{margin:0 0 8px;font-size:12.5px;line-height:1.55;color:#c1cad8}
+  #modal ul{margin:0;padding-left:16px}
+  #modal b{color:var(--fg);font-weight:600}
+  #modal a{color:var(--hs)}
+
+  #ctl{bottom:16px;left:50%;transform:translateX(-50%);width:min(740px,calc(100vw - 32px));
+    display:flex;flex-direction:column;gap:8px}
+  /* the curve IS the scrubber: a separate slider was redundant */
+  #chrono{position:relative;cursor:ew-resize;touch-action:none}
+  #spark{width:100%;height:52px;display:block}
+  #heures{display:flex;justify-content:space-between;margin-top:3px;
+    font-size:9px;letter-spacing:.05em;color:var(--dim);pointer-events:none}
+  .row{display:flex;align-items:center;gap:10px}
+  #ctl button{width:38px;height:32px;font-size:13px}
+  #vitesses{display:flex;gap:4px}
+  #vitesses button{width:auto;padding:0 11px;font-size:11px;
+    font-variant-numeric:tabular-nums;color:var(--dim)}
+  #vitesses button[aria-pressed="true"]{background:var(--hs);border-color:transparent;color:#fff}
+  #ctl #play{width:44px;height:34px;font-size:15px;color:var(--fg);
+    background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.22)}
+  #ctl #play:hover{background:rgba(255,255,255,.16)}
+  #vitesses{border-left:1px solid rgba(255,255,255,.12);padding-left:10px}
+  #pos{margin-left:auto;font:600 12px/1 ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums;color:var(--dim)}
+  #load{position:absolute;inset:0;display:grid;place-content:center;text-align:center;
+    background:var(--bg);z-index:9;gap:8px}
+  #load b{font-size:15px;font-weight:600}
+  #load span{color:var(--dim);font-size:13px}
+</style>
+
+<div id="map"></div>
+
+<!-- Commandes réparties sur les bords, carte au centre. La colonne unique
+     précédente empilait contrôle et contenu sur toute la hauteur et écrasait
+     la carte; ici chaque bord porte une seule fonction. -->
+
+<div id="tete" class="panel">
+  <div id="clock">--:--</div>
+  <div id="date"></div>
+  <div id="total"><b>—</b> trains en circulation</div>
+  <div id="days" role="tablist" aria-label="Choisir une journée"></div>
+  <div id="note-col"></div>
+  <div id="actions">
+    <button id="b-chiffres" aria-pressed="false">Chiffres du jour</button>
+    <button id="a-propos" aria-pressed="false">À propos</button>
+  </div>
+</div>
+
+<div id="calques" class="panel">
+  <div id="collections" role="tablist" aria-label="Territoire"></div>
+  <div id="affichage">
+    <button id="t-trains" class="bascule" aria-pressed="true">
+      <span>Trains</span><i></i></button>
+    <button id="t-reseau" class="bascule" aria-pressed="false"
+            title="Le réseau coloré par son trafic quotidien">
+      <span>Réseau</span><i></i></button>
+  </div>
+</div>
+
+<div id="legende" class="panel">
+  <div id="cats"></div>
+  <div id="odos">
+    <div class="odo"><b id="o-trains">—</b><small>parties depuis minuit</small></div>
+    <div class="odo"><b id="o-km">—</b><small>train-kilomètres</small></div>
+  </div>
+</div>
+
+<aside id="chiffres" class="panel" hidden>
+  <h2>Cette journée<button id="fermer-chiffres" aria-label="Fermer">✕</button></h2>
+  <ul id="desserte"><li class="attente">…</li></ul>
+  <p class="note">Chiffres recalculés pour la journée sélectionnée. Distances à vol
+  d'oiseau, jamais des temps de trajet.</p>
+</aside>
+
+<a id="credit" class="panel" href="https://www.linkedin.com/in/jeremy-magrin/"
+   target="_blank" rel="noopener">Vibe-coded with <span>♥</span> by Jérémy Magrin</a>
+
+<aside id="modal" class="panel" hidden>
+    <h1>Comment lire cette carte<button id="fermer" aria-label="Fermer">✕</button></h1>
+
+    <p>Chaque point est un train, à la position où l'horaire officiel le place à
+    l'instant affiché. La carte rejoue une journée complète, de minuit à minuit.</p>
+
+    <h3>La traînée dit la vitesse</h3>
+    <p>La traînée derrière chaque train couvre les <b>dix dernières minutes</b> de son
+    parcours. Sa longueur n'est donc pas un réglage graphique : c'est une distance
+    réellement parcourue. Un TGV à 300 km/h laisse mécaniquement une traînée cinq fois
+    plus longue qu'un TER à 60 km/h, sans qu'aucune vitesse ne soit calculée.</p>
+
+    <h3>Les trains suivent les vraies voies</h3>
+    <p>Le GTFS de la SNCF donne les gares et les horaires, mais <b>aucun tracé</b> :
+    il indique que le train est à Paris à 10:00 et à Marseille à 13:10, sans dire par où
+    il passe. Relier les gares en ligne droite ferait couper le Massif central à un
+    Paris–Marseille.</p>
+    <p>Le chemin de chaque circulation a donc été reconstruit par <i>map-matching</i> sur
+    le réseau ferré d'OpenStreetMap : 13 600 trajets projetés sur un graphe de
+    115 000 nœuds, 42 millions d'itérations de Dijkstra. Confronté au référentiel
+    officiel de SNCF Réseau, l'écart médian est de <b>7,7 mètres</b>.</p>
+
+    <h3>Les quatre catégories</h3>
+    <p>La marque commerciale est lue dans l'identifiant des points d'arrêt du feed, où
+    elle est présente pour la totalité des circulations : <b>grande vitesse</b>
+    (TGV INOUI, OUIGO, Lyria, ICE), <b>longue distance</b> (Intercités), <b>nuit</b>
+    (Intercités de Nuit) et <b>régional</b> (TER, RER, Transilien).</p>
+
+    <h3>Le vide au centre</h3>
+    <p>La carte rend visible ce qu'on appelle la diagonale du vide. La bascule
+    <b>Réseau</b> affiche chaque tronçon coloré par son trafic quotidien, et
+    <b>Trains</b> permet de les masquer pour ne garder que lui : le contraste
+    entre l'étoile parisienne et le centre du pays se lit alors d'un coup.
+    Les chiffres de la colonne de gauche portent sur la journée sélectionnée et
+    changent donc d'un jour à l'autre.</p>
+    <h3>Ce que la carte ne montre pas</h3>
+    <ul>
+      <li><b>Des horaires théoriques, pas du temps réel.</b> Ni retards, ni suppressions :
+      ici tous les trains sont à l'heure. Aucune position GPS de train n'est publiée en
+      open data en France.</li>
+      <li><b>Pas de fret</b>, qui représente pourtant une part réelle du trafic.</li>
+      <li><b>Pas d'Eurostar ni de Trenitalia</b>, absents du feed. Pas non plus la Corse,
+      exploitée par un opérateur distinct.</li>
+      <li><b>Les autocars TER sont exclus</b> : ce sont des services routiers, pas des
+      trains. Ils comblent pourtant en partie le vide visible ici — la colonne de gauche
+      donne la mesure de ce qu'ils desservent.</li>
+      <li>Entre deux gares, la vitesse est supposée constante — ni accélération ni
+      freinage.</li>
+    </ul>
+
+    <h3>Sources</h3>
+    <p>GTFS SNCF Voyageurs et GTFS Transilien, réseau ferré d'OpenStreetMap,
+    map-matching avec <a href="https://github.com/ad-freiburg/pfaedle" target="_blank"
+    rel="noopener">pfaedle</a>, fond de carte Carto. Le tout sous licence ODbL, sans
+    aucune clé d'API. Dix contrôles automatiques valident chaque journée avant
+    publication.</p>
+</aside>
+
+<div id="ctl" class="panel">
+  <div id="chrono">
+    <canvas id="spark"></canvas>
+    <div id="heures"><span>00h</span><span>06h</span><span>12h</span><span>18h</span><span>24h</span></div>
+  </div>
+  <div class="row">
+    <button id="play" title="Lecture / pause (barre espace)">⏸</button>
+    <div id="vitesses" role="group" aria-label="Vitesse d'animation"></div>
+    <span id="pos"></span>
+  </div>
+</div>
+
+<div id="load"><b>Chargement des trajectoires…</b><span id="load-s">réseau SNCF</span></div>
+
+<script>
+const CATS = [
+  ['highspeed',    [ 59,130,246], 'Grande vitesse'],
+  ['longdistance', [249,115, 22], 'Longue distance'],
+  ['night',        [250,204, 21], 'Nuit'],
+  ['regional',     [ 34,197, 94], 'Régional'],
+];
+const DAY = 86400, STEP = 30;
+const $ = s => document.querySelector(s);
+
+const FRANCE = [[-5.0, 42.2], [8.8, 51.2]];   // mainland; Corsica carries no
+                                              // traffic in this feed (see CFC)
+const map = new maplibregl.Map({
+  container:'map',
+  style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  center:[2.55,46.6], zoom:5.3, pitch:0, attributionControl:{compact:true}
+});
+// Small paddings: the fit is height-constrained, so any top or bottom padding
+// shrinks France. The panels are translucent and sit over sea or neighbouring
+// countries anyway.
+map.fitBounds(FRANCE, {padding:{top:40, bottom:95, left:60, right:230}, duration:0});
+
+// The Carto style labels in English (name_en). The tiles also carry name:fr, so
+// every text layer is switched to French, falling back to the local then the
+// international name for the rare objects without a translation.
+function libellesFR(){
+  for (const l of map.getStyle().layers){
+    if (l.type !== 'symbol' || !l.layout || !l.layout['text-field']) continue;
+    map.setLayoutProperty(l.id, 'text-field',
+      ['coalesce', ['get','name:fr'], ['get','name'], ['get','name_int'], ['get','name_en']]);
+  }
+}
+map.on('style.load', libellesFR);
+if (map.isStyleLoaded()) libellesFR();
+
+async function bin(url, T){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(url+' → '+r.status);
+  return new T(await r.arrayBuffer());
+}
+
+// Loads a day: metadata plus the 12 binary buffers. The .bin files keep the same
+// URL from one day to the next, hence the ?v=<build> suffix, which stops a CDN or
+// browser cache from serving another date's trajectories.
+async function chargerJour(date, onCat){
+  const meta = await (await fetch(`data/${date}/meta.json`, {cache:'no-cache'})).json();
+  const v = meta.build ? `?v=${meta.build}` : '';
+  const groups = [];
+  for(const [cat, color] of CATS){
+    if(onCat) onCat(cat);
+    const [pos, time, idx] = await Promise.all([
+      bin(`data/${date}/${cat}/pos.bin${v}`,  Float32Array),
+      bin(`data/${date}/${cat}/time.bin${v}`, Float32Array),
+      bin(`data/${date}/${cat}/idx.bin${v}`,  Uint32Array),
+    ]);
+    groups.push({cat, color, pos, time, idx, n: idx.length-1});
+  }
+  return {meta, groups};
+}
+
+(async () => {
+  const doc = await (await fetch('data/days.json', {cache:'no-cache'})).json();
+  // Two distinct networks, never overlaid: the Corsican feed only covers one week
+  // of March 2026 and has not been refreshed since.
+  const cols = doc.collections || [{id:'france', libelle:'France', days: doc.days,
+                                    default: doc.default, note: null}];
+  let col = cols.find(c => c.id === (doc.defaut || 'france')) || cols[0];
+  let jours = col;
+  let jour = col.default;
+  let {meta, groups} = await chargerJour(jour, c => $('#load-s').textContent = c);
+  $('#load').remove();
+
+  let curve = meta.active_curve;
+  const BUCKET = meta.bucket_seconds, TRAIL = meta.trail_seconds;
+  const overlay = new deck.MapboxOverlay({interleaved:false, layers:[]});
+  map.addControl(overlay);
+
+  // animation state
+  let t = 5*3600, playing = true, speed = 300, last = performance.now();
+
+  // Layers are built ONCE, and sliced by hour. deck.gl processes every vertex of
+  // a TripsLayer on every frame, even outside the trail window: drawing 2.3 M of
+  // them caps at ~16 fps. Only the current slice is visible here, roughly 1/24 of
+  // the geometry per frame. The subarray views share the same ArrayBuffer, so
+  // nothing is copied.
+  let built = [], bucketOf = [], catOf = [];
+  const actives = new Set(CATS.map(c => c[0]));
+  function construireCouches(){
+    built = []; bucketOf = []; catOf = [];
+    for (const g of groups){
+    meta.categories[g.cat].buckets.forEach(([p0, p1], b) => {
+      if (p1 <= p0) return;
+      const v0 = g.idx[p0], v1 = g.idx[p1];
+      const si = new Uint32Array(p1 - p0 + 1);
+      for (let i = 0; i <= p1 - p0; i++) si[i] = g.idx[p0 + i] - v0;
+      // One thin trail pass. Stacking several TripsLayers to thicken the head
+      // cost 43 fps: deck.gl walks EVERY vertex of the slice on each pass,
+      // whether the trail is long or short. The head is therefore drawn
+      // separately, as a scatter of points (see teteEtHalo).
+      built.push(new deck.TripsLayer({
+        id: `${g.cat}-${b}`,
+        data: {
+          length: p1 - p0,
+          startIndices: si,
+          attributes: {
+            getPath:       {value: g.pos.subarray(v0 * 2, v1 * 2), size: 2},
+            getTimestamps: {value: g.time.subarray(v0, v1),        size: 1},
+          }
+        },
+        _pathType: 'open',
+        positionFormat: 'XY',
+        getColor: g.color,
+        currentTime: t,
+        trailLength: TRAIL,
+        widthMinPixels: 1.15,
+        capRounded: false, jointRounded: false,
+        opacity: .72,
+        visible: false,
+      }));
+      bucketOf.push(b); catOf.push(g.cat);
+    });
+    }
+    for (const [cat, , nom] of CATS){
+      const el = $('#live-' + cat);
+      if (el) el.parentElement.parentElement.title =
+        `${nom} — ${meta.categories[cat].trips.toLocaleString('fr-FR')} circulations sur la journée, `
+        + `pic à ${meta.pic_par_categorie[cat]} simultanés`;
+    }
+  }
+  construireCouches();
+  // Position of each running train in the active slice. One binary search per
+  // trip, i.e. ~1,500 per frame at peak: negligible next to the 100,000 vertices
+  // an extra trail pass would cost.
+  function positionsActives(g, bucket){
+    const plage = meta.categories[g.cat].buckets[bucket];
+    if (!plage) return new Float32Array(0);
+    const [p0, p1] = plage;
+    const out = new Float32Array((p1 - p0) * 2);
+    let k = 0;
+    for (let p = p0; p < p1; p++){
+      const a = g.idx[p], b = g.idx[p + 1];
+      if (b - a < 2 || g.time[a] > t || g.time[b - 1] < t) continue;
+      let lo = a, hi = b - 1;
+      while (lo < hi){ const m = (lo + hi) >> 1; if (g.time[m] < t) lo = m + 1; else hi = m; }
+      const i1 = lo, i0 = lo > a ? lo - 1 : a;
+      const t0 = g.time[i0], t1 = g.time[i1];
+      const f = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+      out[k++] = g.pos[i0*2]     + (g.pos[i1*2]     - g.pos[i0*2])     * f;
+      out[k++] = g.pos[i0*2 + 1] + (g.pos[i1*2 + 1] - g.pos[i0*2 + 1]) * f;
+    }
+    return out.subarray(0, k);
+  }
+
+  // Diffuse halo, then a sharp dot, for each category.
+  function teteEtHalo(){
+    const ab = Math.floor(t / BUCKET), out = [];
+    if (!trainsVisibles) return [];
+    for (const g of groups){
+      if (!actives.has(g.cat)) continue;
+      const v = positionsActives(g, ab);
+      const n = v.length / 2;
+      if (!n) continue;
+      const data = {length: n, attributes: {getPosition: {value: v, size: 2}}};
+      out.push(new deck.ScatterplotLayer({
+        id: `${g.cat}-halo`, data, positionFormat: 'XY',
+        getFillColor: g.color, getRadius: 1,
+        // Mind the density: in the Paris region ~300 trains overlap within a few
+        // pixels and the halos add up until they saturate into a flat green
+        // patch. Hence a deliberately tiny radius and opacity.
+        radiusMinPixels: 2.5, radiusMaxPixels: 2.5,
+        opacity: .07, stroked: false,
+      }));
+      out.push(new deck.ScatterplotLayer({
+        id: `${g.cat}-tete`, data, positionFormat: 'XY',
+        getFillColor: g.color, getRadius: 1,
+        radiusMinPixels: 1.25, radiusMaxPixels: 1.25,
+        opacity: .9, stroked: false,
+      }));
+    }
+    return out;
+  }
+
+  // ---- network layer: each segment's daily traffic ----
+  // It is STATIC, so it goes to MapLibre rather than deck.gl. deck.gl redraws
+  // everything every frame: putting 210,000 motionless vertices there cost 8 fps
+  // at peak. MapLibre only repaints on camera movement, so the per-frame cost
+  // drops to zero. It also sits naturally beneath the trains.
+  const TEINTES = ['#3a2e56','#603c86','#8e4aaa','#be56a8','#ee689e'];
+  const LARGEURS = [0.5, 0.7, 1.0, 1.5, 2.2];
+  const OPACITES = [.55, .62, .70, .78, .85];
+  const ID_SRC = 'reseau-src';
+  const idCouche = i => `reseau-l${i}`;
+  const dejaCharge = new Set();
+  let reseauVisible = false, reseauEnCours = false, reseauPret = false;
+
+  async function geojsonReseau(date){
+    const m = await (await fetch(`data/${date}/reseau/meta.json`)).json();
+    const feats = [];
+    for (let i = 0; i < m.classes.length; i++){
+      const [pos, idx] = await Promise.all([
+        bin(`data/${date}/reseau/c${i}-pos.bin`, Float32Array),
+        bin(`data/${date}/reseau/c${i}-idx.bin`, Uint32Array),
+      ]);
+      for (let p = 0; p + 1 < idx.length; p++){
+        const a = idx[p], b = idx[p + 1];
+        if (b - a < 2) continue;
+        const co = new Array(b - a);
+        for (let k = a; k < b; k++) co[k - a] = [pos[k*2], pos[k*2 + 1]];
+        feats.push({type:'Feature', properties:{c:i}, geometry:{type:'LineString', coordinates:co}});
+      }
+    }
+    return {type:'FeatureCollection', features: feats};
+  }
+
+  function poserCouches(){
+    if (reseauPret) return;
+    // below the basemap labels, so city names stay readable
+    const premierTexte = (map.getStyle().layers.find(l => l.type === 'symbol') || {}).id;
+    for (let i = 0; i < TEINTES.length; i++){
+      map.addLayer({
+        id: idCouche(i), type: 'line', source: ID_SRC, filter: ['==', ['get','c'], i],
+        layout: {'line-cap':'butt', 'line-join':'round', visibility:'none'},
+        paint: {'line-color': TEINTES[i], 'line-width': LARGEURS[i], 'line-opacity': OPACITES[i]},
+      }, premierTexte);
+    }
+    reseauPret = true;
+  }
+
+  function visibiliteReseau(v){
+    if (!reseauPret) return;
+    for (let i = 0; i < TEINTES.length; i++)
+      map.setLayoutProperty(idCouche(i), 'visibility', v ? 'visible' : 'none');
+  }
+
+  async function montrerReseau(date){
+    const fc = await geojsonReseau(date);
+    if (!map.getSource(ID_SRC)) map.addSource(ID_SRC, {type:'geojson', data: fc});
+    else map.getSource(ID_SRC).setData(fc);
+    poserCouches();
+    dejaCharge.add(date);
+  }
+
+  let trainsVisibles = true;
+  $('#t-trains').onclick = e => {
+    trainsVisibles = !trainsVisibles;
+    e.currentTarget.setAttribute('aria-pressed', String(trainsVisibles));
+  };
+  $('#t-reseau').onclick = async e => {
+    if (reseauEnCours) return;
+    reseauVisible = !reseauVisible;
+    e.currentTarget.setAttribute('aria-pressed', String(reseauVisible));
+    if (reseauVisible && !dejaCharge.has(jour)){
+      reseauEnCours = true; e.currentTarget.querySelector('span').textContent = 'Réseau…';
+      try { await montrerReseau(jour); }
+      catch(err){ console.error(err); reseauVisible = false;
+                  $('#t-reseau').setAttribute('aria-pressed', 'false'); }
+      finally { reseauEnCours = false;
+                $('#t-reseau').querySelector('span').textContent = 'Réseau'; }
+    }
+    visibiliteReseau(reseauVisible);
+  };
+  // A click isolates the category when it is the only active one, otherwise it
+  // toggles it. Avoids an extra "show all" button while still allowing a reset.
+  function majFiltres(){
+    for (const el of boiteCats.children)
+      el.setAttribute('aria-pressed', String(actives.has(el.dataset.cat)));
+  }
+
+  const layers = () => {
+    const ab = Math.floor(t / BUCKET);
+    if (!trainsVisibles) return [];                   // network only: MapLibre handles it
+    return built.map((l, i) => l.clone({
+      currentTime: t, visible: bucketOf[i] === ab && actives.has(catOf[i])
+    })).concat(teteEtHalo());
+  };
+
+  // ---- activity curve, doubling as the scrubber ----
+  const cv = $('#spark'), cx = cv.getContext('2d');
+  // The curve is identical from one frame to the next; only the playhead moves.
+  // It is pre-rendered once into an offscreen canvas, and each frame is just two
+  // drawImage calls. Redrawing it fully at 60 Hz dropped the animation to 31 fps.
+  const fond = document.createElement('canvas');
+  let fw = 0, fh = 0;
+  function dessinerFond(){
+    const w = cv.clientWidth, h = cv.clientHeight, dpr = devicePixelRatio || 1;
+    if (!w) return false;
+    fw = w; fh = h;
+    fond.width = w * dpr; fond.height = h * dpr;
+    cv.width = w * dpr; cv.height = h * dpr;
+    const g = fond.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(255,255,255,.06)'; g.lineWidth = 1;
+    for (let hh = 3; hh < 24; hh += 3){
+      const x = Math.round(hh / 24 * w) + .5;
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
+    }
+    const mx = Math.max(...curve) || 1;
+    g.beginPath();
+    for (let i = 0; i < curve.length; i++){
+      const x = i / (curve.length - 1) * w, y = h - curve[i] / mx * (h - 4) - 2;
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    }
+    g.lineTo(w, h); g.lineTo(0, h); g.closePath();
+    const gr = g.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, 'rgba(59,130,246,.85)'); gr.addColorStop(1, 'rgba(59,130,246,.07)');
+    g.fillStyle = gr; g.fill();
+    return true;
+  }
+  function drawSpark(){
+    const w = cv.clientWidth, h = cv.clientHeight, dpr = devicePixelRatio || 1;
+    if (!w) return;
+    if (w !== fw || h !== fh) { if (!dessinerFond()) return; }
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx.clearRect(0, 0, w, h);
+    cx.globalAlpha = .42; cx.drawImage(fond, 0, 0, w, h);     // ahead, dimmed
+    const px = t / DAY * w;
+    cx.globalAlpha = 1;
+    cx.save(); cx.beginPath(); cx.rect(0, 0, px, h); cx.clip();
+    cx.drawImage(fond, 0, 0, w, h); cx.restore();             // elapsed, full
+    cx.strokeStyle = '#fff'; cx.lineWidth = 1.5;
+    cx.beginPath(); cx.moveTo(px, 0); cx.lineTo(px, h); cx.stroke();
+  }
+  addEventListener('resize', () => { fw = 0; dernierPx = -1; drawSpark(); });
+
+  // drag-scrubbing on the curve
+  const chrono = $('#chrono');
+  const versTemps = e => {
+    const r = chrono.getBoundingClientRect();
+    t = Math.min(DAY - 1, Math.max(0, (e.clientX - r.left) / r.width * DAY));
+    hud();
+  };
+  chrono.addEventListener('pointerdown', e => {
+    chrono.setPointerCapture(e.pointerId); versTemps(e);
+    const bouge = ev => versTemps(ev);
+    const fin = () => { chrono.removeEventListener('pointermove', bouge);
+                        removeEventListener('pointerup', fin); };
+    chrono.addEventListener('pointermove', bouge);
+    addEventListener('pointerup', fin);
+  });
+
+  // speeds as segmented buttons: more legible than a dropdown
+  const VITESSES = [60, 120, 300, 600, 1800];
+  const boiteV = $('#vitesses');
+  for (const v of VITESSES){
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = v + '×'; b.dataset.v = v;
+    b.setAttribute('aria-pressed', String(v === speed));
+    b.onclick = () => { speed = v;
+      for (const x of boiteV.children) x.setAttribute('aria-pressed', String(+x.dataset.v === v)); };
+    boiteV.append(b);
+  }
+
+  const dfmt = new Intl.DateTimeFormat('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const enDate = d => new Date(+d.slice(0,4), +d.slice(4,6)-1, +d.slice(6,8));
+  const iso    = d => `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+  function majDate(){ $('#date').textContent = dfmt.format(enDate(meta.date)); }
+  majDate();
+
+  // Seven contiguous days: a strip of pills beats a date picker. Everything is
+  // visible at once, one click is enough, and the bar height under each day makes
+  // the weekend drop readable before clicking.
+  let dispo = jours.days.map(j => j.date).sort();
+  let parDate = Object.fromEntries(jours.days.map(j => [j.date, j]));
+  let maxTrips = Math.max(...jours.days.map(j => j.trips));
+  let minTrips = Math.min(...jours.days.map(j => j.trips));
+  const aujourdhui = new Date().toISOString().slice(0,10).replaceAll('-','');
+  const jfmt = new Intl.DateTimeFormat('fr-FR', {weekday:'short'});
+  const bande = $('#days');
+  let enCours = false;
+
+  function construireBande(){
+    bande.innerHTML = '';
+    dispo.forEach(d => {
+    const dt = enDate(d);
+    const b = document.createElement('button');
+    b.type = 'button'; b.dataset.date = d; b.setAttribute('role','tab');
+    b.title = dfmt.format(dt) + ` — ${parDate[d].trips.toLocaleString('fr-FR')} circulations`;
+    if (d === aujourdhui) b.classList.add('today');
+    const j = document.createElement('span'); j.className = 'j';
+    j.textContent = jfmt.format(dt).replace('.','');
+    const n = document.createElement('span'); n.className = 'n';
+    n.textContent = dt.getDate();
+    // Scale anchored on the week's min-max spread: anchored at zero, the gap
+    // between a Sunday and a Tuesday would span two pixels.
+    const box = document.createElement('span'); box.className = 'b';
+    const v = document.createElement('i'); v.className = 'v';
+    const etendue = maxTrips - minTrips;
+    v.style.height = (2 + 7 * (etendue ? (parDate[d].trips - minTrips) / etendue : 1)).toFixed(1) + 'px';
+    box.append(v);
+    b.append(j, n, box);
+    b.onclick = () => choisirJour(d);
+    bande.append(b);
+    });
+  }
+  construireBande();
+
+  // One row per category: colour dot, label, live counter and gauge.
+  const boiteCats = $('#cats');
+  for (const [cat, rgb, nom] of CATS){
+    const d = document.createElement('button');
+    d.type = 'button'; d.className = 'cat'; d.dataset.cat = cat;
+    d.style.color = `rgb(${rgb.join(',')})`;
+    d.setAttribute('aria-pressed', 'true');
+    d.onclick = () => {
+      if (actives.size === 1 && actives.has(cat)) CATS.forEach(([c]) => actives.add(c));
+      else if (actives.has(cat)) actives.delete(cat);
+      else actives.add(cat);
+      if (!actives.size) CATS.forEach(([c]) => actives.add(c));
+      majFiltres();
+    };
+    d.title = 'Afficher ou masquer — recliquer sur la seule active les remet toutes';
+    const t = document.createElement('div'); t.className = 't';
+    const i = document.createElement('i');
+    const sp = document.createElement('span'); sp.textContent = nom;
+    const b = document.createElement('b'); b.id = 'live-' + cat; b.textContent = '—';
+    t.append(i, sp, b);
+    const g = document.createElement('div'); g.className = 'g';
+    const j = document.createElement('i'); j.id = 'bar-' + cat; j.style.width = '0%';
+    g.append(j); d.append(t, g); boiteCats.append(d);
+  }
+
+  // Framing extents: Corsica fits in a far smaller box.
+  const EMPRISES = {france: FRANCE, corse: [[8.4, 41.3], [9.7, 43.1]]};
+
+  const boiteCols = $('#collections');
+  function construireCollections(){
+    boiteCols.innerHTML = '';
+    if (cols.length < 2) return;                 // a single network: no selector
+    for (const c of cols){
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = c.libelle; b.dataset.col = c.id;
+      b.setAttribute('role', 'tab');
+      b.onclick = () => choisirCollection(c.id);
+      boiteCols.append(b);
+    }
+  }
+  // Panels sit below the header, whose height changes depending on whether the
+  // Corsican note is shown.
+  function placerPanneaux(){
+    const b = $('#tete').getBoundingClientRect();
+    const y = Math.round(b.bottom + 8);
+    for (const id of ['#chiffres', '#modal']){
+      const el = $(id);
+      el.style.top = y + 'px';
+      el.style.maxHeight = (innerHeight - y - 120) + 'px';
+    }
+  }
+  addEventListener('resize', placerPanneaux);
+
+  function majCollections(){
+    for (const b of boiteCols.children)
+      b.setAttribute('aria-selected', String(b.dataset.col === col.id));
+    $('#note-col').textContent = col.note || '';
+    placerPanneaux();
+  }
+  construireCollections();
+  majCollections();      // otherwise no collection is marked active on load
+  placerPanneaux();
+
+  async function choisirCollection(id){
+    const c = cols.find(x => x.id === id);
+    if (!c || c.id === col.id || enCours) return;
+    col = c; jours = c;
+    dispo = c.days.map(j => j.date).sort();
+    parDate = Object.fromEntries(c.days.map(j => [j.date, j]));
+    maxTrips = Math.max(...c.days.map(j => j.trips));
+    minTrips = Math.min(...c.days.map(j => j.trips));
+    construireBande(); majCollections();
+    // the loaded network belongs to the other collection: start over
+    if (reseauPret){ visibiliteReseau(false); }
+    dejaCharge.clear();
+    reseauVisible = false; $('#t-reseau').setAttribute('aria-pressed', 'false');
+    const e = EMPRISES[id] || FRANCE;
+    map.fitBounds(e, {padding:{top:40, bottom:95, left:60, right:230}, duration:600});
+    await choisirJour(c.default, true);
+  }
+
+  function majBande(){
+    for (const b of bande.children)
+      b.setAttribute('aria-selected', String(b.dataset.date === jour));
+  }
+  majBande();
+
+  async function choisirJour(cible, force){
+    if (enCours || (!force && cible === jour) || !parDate[cible]) return;
+    enCours = true; document.body.classList.add('busy');
+    try {
+      const r = await chargerJour(cible);
+      // No manual release here: measured with --expose-gc, the heap oscillates
+      // between 192 and 201 MB depending on the size of the day shown, with no
+      // accumulation. The apparent growth without forced collection was only V8
+      // deferring its sweep.
+      meta = r.meta; groups = r.groups; curve = meta.active_curve; jour = cible;
+      construireCouches();                  // the current time is preserved
+      fw = 0; dernierPas = -1; dernierPx = -1;   // curve and values change
+      majDate(); majBande(); hud();
+      chiffresDesserte(cible);
+      majCollections();
+      if (reseauVisible){
+        try { await montrerReseau(cible); visibiliteReseau(true); }
+        catch(e){ console.error(e); }
+      } else { dejaCharge.clear(); }   // traffic changes: the previous day's layer is stale
+    } catch(e){ console.error(e); }
+    finally { enCours = false; document.body.classList.remove('busy'); }
+  }
+
+  // left/right arrows: walk the week without aiming at a pill
+  addEventListener('keydown', e => {
+    if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
+    const i = dispo.indexOf(jour) + (e.code === 'ArrowRight' ? 1 : -1);
+    if (i >= 0 && i < dispo.length){ e.preventDefault(); choisirJour(dispo[i]); }
+  });
+
+  const nf = new Intl.NumberFormat('fr-FR');
+  // Displayed values only change once per simulated 30 s step, and the playhead
+  // only at pixel granularity. Rewriting eleven DOM nodes and redrawing the curve
+  // every frame cost 10 fps for an identical result.
+  let dernierPas = -1, dernierPx = -1;
+  function hud(){
+    const s = Math.floor(t);
+    const i = Math.min(curve.length - 1, Math.floor(s / STEP));
+    if (i !== dernierPas){
+      dernierPas = i;
+      $('#clock').textContent =
+        String(Math.floor(s/3600)%24).padStart(2,'0')+':'+String(Math.floor(s/60)%60).padStart(2,'0');
+      $('#total').firstChild.textContent = nf.format(curve[i] || 0);
+      for (const [cat] of CATS){
+        const v = (meta.active_par_categorie[cat] || [])[i] || 0;
+        const pic = meta.pic_par_categorie[cat] || 1;
+        $('#live-' + cat).textContent = nf.format(v);
+        $('#bar-' + cat).style.width = (100 * v / pic).toFixed(1) + '%';
+      }
+      $('#o-trains').textContent = nf.format(meta.departs_cumules[i] || 0);
+      $('#o-km').textContent = nf.format(meta.km_cumules[i] || 0);
+      $('#pos').textContent = `${Math.round(s / DAY * 100)} % de la journée`;
+    }
+    const px = Math.round(t / DAY * (cv.clientWidth || 1));
+    if (px !== dernierPx){ dernierPx = px; drawSpark(); }
+  }
+
+  // An exception here killed the loop silently: no frame was produced any more,
+  // while an FPS probe based on requestAnimationFrame kept reporting 60. Log and
+  // carry on.
+  let framesRendues = 0;
+  // On reaching midnight, playback moves to the next day in the collection if
+  // there is one, instead of looping on the same day. At the end of the week it
+  // wraps back to the first day.
+  let enchainement = false;
+  async function jourSuivant(){
+    if (enchainement || enCours) return;
+    const i = dispo.indexOf(jour);
+    const suivant = dispo[(i + 1) % dispo.length];
+    if (!suivant || suivant === jour) return;
+    enchainement = true;
+    try { await choisirJour(suivant); } finally { enchainement = false; }
+  }
+
+  function frame(now){
+    const dt = (now-last)/1000; last = now;
+    if(playing){
+      const avant = t;
+      t += dt * speed;
+      if (t >= DAY){ t -= DAY; if (avant < DAY) jourSuivant(); }
+    }
+    try {
+      overlay.setProps({layers: layers()});
+      hud();
+      framesRendues++;
+    } catch(e){
+      console.error('boucle d\'animation:', e);
+    }
+    requestAnimationFrame(frame);
+  }
+  window.__frames = () => framesRendues;
+  requestAnimationFrame(frame);
+
+  // ---- render mode (?render=1): frame-by-frame driving for the video export ----
+  if (new URLSearchParams(location.search).has('render')){
+    playing = false;
+    document.querySelector('#ctl .row').style.display = 'none';
+    const ttl = document.createElement('div');
+    ttl.id = 'title';
+    ttl.textContent = 'Une journée de trafic ferroviaire';
+    $('#tete').prepend(ttl);
+    window.__ready = true;
+  }
+
+  // Advances to a precise instant and only returns once the frame is drawn.
+  // Used by the video export and by the automated checks.
+  window.__seek = async v => {
+    t = v;
+    for (let i = 0; i < 3; i++) await new Promise(requestAnimationFrame);
+    return $('#clock').textContent;
+  };
+
+  const boite = $('#chiffres'), btnC = $('#b-chiffres');
+  const voirChiffres = v => { boite.hidden = !v; btnC.setAttribute('aria-pressed', String(v)); };
+  btnC.onclick = () => { ouvrir(false); voirChiffres(boite.hidden); };
+  $('#fermer-chiffres').onclick = () => voirChiffres(false);
+
+  const modal = $('#modal');
+  const ouvrir = v => { modal.hidden = !v; $('#a-propos').setAttribute('aria-pressed', String(v)); };
+  const d1 = x => Number(x).toLocaleString('fr-FR',
+                    {minimumFractionDigits: 1, maximumFractionDigits: 1});
+  // Station and department names come from third-party data, so they are escaped
+  // before any interpolation into HTML. The risk is theoretical, but the pattern
+  // has no place in a public repository.
+  const esc = v => String(v).replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  async function chiffresDesserte(date){
+    const box = $('#desserte');
+    box.innerHTML = '';
+    const attente = document.createElement('li');
+    attente.className = 'attente'; attente.textContent = '…'; box.append(attente);
+    try {
+      const d = await (await fetch(`data/${date}/desserte.json`)).json();
+      const dep = d.par_departement;
+      const vides = dep.filter(x => x.sans_desserte).map(x => x.nom);
+      const bas = dep.filter(x => !x.sans_desserte)[0];
+      const haut = dep[dep.length - 1];
+      const p = d.population.part_a_moins_de;
+      const iso = d.gares_les_plus_isolees[0];
+      const n = x => esc(x.toLocaleString('fr-FR'));
+      const lignes = [];
+      if (vides.length)
+        lignes.push(`<b>${vides.length} départements sans aucun train</b> : `
+                    + vides.map(esc).join(', '));
+      lignes.push(`<b>${n(haut.trains)} trains</b> à ${esc(haut.nom)} contre <b>${n(bas.trains)}</b>
+                   en ${esc(bas.nom)} : 1 à ${Math.round(haut.trains / Math.max(1, bas.trains))}`);
+      lignes.push(`<b>${d1(d.centralisation.part_idf_pct)} %</b> des circulations touchent
+                   l'Île-de-France`);
+      lignes.push(`<b>${d1(p['5km'])} %</b> des habitants à moins de 5 km d'une gare,
+                   <b>${d1(100 - p['20km'])} %</b> au-delà de 20 km`);
+      lignes.push(`Gare la plus isolée : <b>${esc(iso.gare)}</b>, à ${d1(iso.voisine_km)} km de sa voisine`);
+      const a = d.autocars_exclus;
+      if (a) lignes.push(`<b>${n(a.circulations)} autocars TER</b> sont exclus de la carte :
+              ${d1(a.part_dans_tiers_moins_desservi_pct)} % de leurs dessertes visent le tiers
+              de départements le moins bien desservi par le train, contre
+              ${d1(a.part_des_trains_dans_ce_tiers_pct)} % des trains`);
+      box.innerHTML = '';
+      for (const l of lignes){
+        const li = document.createElement('li'); li.innerHTML = l; box.append(li);
+      }
+    } catch(e){
+      // No analysis for Corsica: it covers mainland departments and would be
+      // meaningless on a single island.
+      const li = document.createElement('li'); li.className = 'attente';
+      li.textContent = col.id === 'corse'
+        ? "Analyse par département non applicable au réseau corse."
+        : "Chiffres indisponibles.";
+      box.innerHTML = ''; box.append(li);
+    }
+  }
+  chiffresDesserte(jour);
+
+  $('#a-propos').onclick = () => { voirChiffres(false); ouvrir(modal.hidden); };
+  $('#fermer').onclick = () => ouvrir(false);
+  modal.onclick = e => { if (e.target === modal) ouvrir(false); };   // click outside the box
+  addEventListener('keydown', e => { if (e.code === 'Escape') ouvrir(false); });
+
+  $('#play').onclick = e => { playing = !playing; e.target.textContent = playing ? '⏸' : '▶'; };
+  addEventListener('keydown', e => { if(e.code==='Space'){ e.preventDefault(); $('#play').click(); } });
+})().catch(e => {
+  const box = $('#load');
+  if (box){
+    box.textContent = '';
+    const t = document.createElement('b'); t.textContent = 'Erreur';
+    const m = document.createElement('span'); m.textContent = e.message;  // textContent, not innerHTML
+    box.append(t, m);
+  }
+  console.error(e);
+});
+</script>

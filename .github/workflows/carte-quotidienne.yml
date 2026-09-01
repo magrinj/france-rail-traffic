@@ -1,0 +1,167 @@
+name: Daily map
+
+# The first run is triggered by hand (workflow_dispatch) to check the result
+# before letting the schedule take over.
+on:
+  workflow_dispatch:
+  # Re-enable once a manual run has been verified end to end: an armed schedule
+  # would otherwise retry, and fail, every night.
+  # schedule:
+  #   - cron: '20 3 * * *'      # 03:20 UTC, i.e. 05:20 in Paris during summer time
+
+permissions:
+  contents: write   # required to publish the release asset
+
+concurrency:
+  group: carte-quotidienne
+  cancel-in-progress: false
+
+env:
+  # Pinned by digest, not by tag: two runs of THIS image produce byte-identical
+  # output (verified). A different pfaedle build routes ~5 % of trips differently.
+  PFAEDLE_IMAGE: ghcr.io/ad-freiburg/pfaedle@sha256:af4fdc647699ea1ffe5150fd1f9d264c465c2876710ea749e8cb284f13abd20d
+  GTFS_NATIONAL: https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip
+  GTFS_TRANSILIEN: https://eu.ftp.opendatasoft.com/sncf/gtfs/transilien-gtfs.zip
+  OSM_FRANCE: https://download.geofabrik.de/europe/france-latest.osm.pbf
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Target date and cache key
+        id: d
+        run: |
+          echo "date=$(TZ=Europe/Paris date +%Y%m%d)"  >> "$GITHUB_OUTPUT"
+          echo "month=$(TZ=Europe/Paris date +%Y-%m)"  >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download GTFS feeds
+        run: |
+          set -euo pipefail
+          mkdir -p data/raw data/processed logs
+          cd data/raw
+          curl -L --fail --retry 3 -o sncf-national.zip "$GTFS_NATIONAL"
+          curl -L --fail --retry 3 -o transilien.zip    "$GTFS_TRANSILIEN"
+          for z in sncf-national transilien; do
+            # zip-slip guard before extracting a third-party archive
+            if unzip -Z1 "$z.zip" | grep -qE '^/|(^|/)\.\./'; then
+              echo "::error::$z.zip contains a suspicious path"; exit 1
+            fi
+            rm -rf "$z"; unzip -oq "$z.zip" -d "$z"
+          done
+          sha256sum sncf-national.zip transilien.zip | tee gtfs-checksums.txt
+
+      - name: Inspection report
+        env:
+          TARGET_DATE: ${{ steps.d.outputs.date }}
+        run: python scripts/gtfs_inspect.py | tee logs/inspection.txt
+
+
+      # The filtered rail network (14 MB) is stable: tracks do not move from one
+      # day to the next. Rebuilt once a month, which avoids re-downloading
+      # 4.7 GB every night.
+      - name: OSM rail network cache
+        id: rail
+        uses: actions/cache@v4
+        with:
+          path: data/processed/france-rail.osm.pbf
+          key: france-rail-v1-${{ steps.d.outputs.month }}
+
+      - name: Extract the rail network from OpenStreetMap
+        if: steps.rail.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          free=$(df -BG --output=avail . | tail -1 | tr -dc '0-9')
+          echo "free disk space: ${free} GB"
+          if [ "$free" -lt 12 ]; then
+            echo "::error::only ${free} GB free, the France PBF needs 12"
+            exit 1
+          fi
+          cd data/raw
+          curl -L --fail --retry 3 -o france-latest.osm.pbf.md5 "$OSM_FRANCE.md5"
+          curl -L --fail --retry 3 -o france-latest.osm.pbf      "$OSM_FRANCE"
+          md5sum -c france-latest.osm.pbf.md5
+          cd "$GITHUB_WORKSPACE"
+          # pfaedle bounds its extraction on the feed's extent, so one is needed.
+          TARGET_DATE=${{ steps.d.outputs.date }} python scripts/merge_gtfs.py >/dev/null
+          bash scripts/run_pfaedle.sh
+          rm -f data/raw/france-latest.osm.pbf      # 4.7 GB, no longer needed
+          ls -lh data/processed/france-rail.osm.pbf
+
+      - name: Assemble the site shell
+        run: bash scripts/build_site.sh
+
+      # The Chemins de fer de Corse feed is frozen (3-9 March 2026) and already
+      # ships its own shapes: no map-matching. Run BEFORE France for two reasons:
+      # days.json merges collections by reading the existing file, and
+      # data/processed/ must end on the SNCF reference day for the segment export.
+      # An unavailable Corsican feed must not block the day's map: this step fails
+      # on its own and the collection simply disappears from the site.
+      - name: Build the Corsican collection
+        continue-on-error: true
+        run: python scripts/build_window.py --corse | tee logs/window-corse.txt
+
+      # Straddling window: 3 days back, today, 3 days ahead. Everything is
+      # recomputed on every run, with nothing carried over: no silent drift is
+      # possible. Each day passes the 10 checks before being published; a failing
+      # day is set aside without taking the others down, and the workflow exits
+      # with an error to flag it.
+      - name: Build the window of days
+        run: python scripts/build_window.py --back 3 --forward 3 | tee logs/window.txt
+
+      # Reusable dataset: the routing result, not the network geometry (SNCF
+      # Reseau already publishes that). Released under a fixed tag so the
+      # data.gouv.fr entry can point at a stable URL.
+      - name: Export station-to-station segments
+        run: |
+          python scripts/export_segments.py
+          gzip -9 -kf data/processed/segments-reseau.geojson
+          ls -lh data/processed/segments-reseau.geojson*
+
+      - name: Publish the dataset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dataset-latest
+          name: Station-to-station segments of the French rail network
+          body: |
+            The result of routing SNCF GTFS timetables onto the rail network,
+            updated daily. Data for ${{ steps.d.outputs.date }}.
+
+            Each feature is the track geometry between two consecutive stations,
+            with the number of services using it that day.
+
+            This dataset is NOT the rail network geometry: SNCF Reseau already
+            publishes that, in an official and more precise version
+            (https://data.sncf.com/explore/dataset/formes-des-lignes-du-rfn/).
+            What is published here is WHICH TRACKS EACH TRAIN USES, which nobody
+            else publishes.
+
+            ODbL licence. Sources: SNCF Voyageurs (GTFS) and the OpenStreetMap
+            contributors. Attribution required, share-alike.
+          files: data/processed/segments-reseau.geojson.gz
+          make_latest: false
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=${{ vars.CF_PAGES_PROJECT }} --branch=main
+
+      - name: Logs on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ steps.d.outputs.date }}
+          path: logs/
+          retention-days: 14

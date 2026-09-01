@@ -1,0 +1,13 @@
+# data (~5 Gb)
+data/
+# generated website
+dist/
+# logs
+logs/
+specs/
+# pfaedle
+vendor/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
