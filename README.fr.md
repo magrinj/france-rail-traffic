@@ -7,6 +7,7 @@
 
 # Trafic ferroviaire français — visualisation animée sur 24 h
 
+[![site](https://img.shields.io/badge/en%20ligne-france--rail--traffic.pages.dev-3b82f6.svg)](https://france-rail-traffic.pages.dev)
 [![licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![données](https://img.shields.io/badge/donn%C3%A9es-ODbL-orange.svg)](#licence)
 [![Carte quotidienne](https://github.com/magrinj/france-rail-traffic/actions/workflows/carte-quotidienne.yml/badge.svg)](https://github.com/magrinj/france-rail-traffic/actions/workflows/carte-quotidienne.yml)
@@ -17,6 +18,8 @@ est un point mobile qui suit la **vraie géométrie des voies** (map-matching
 OpenStreetMap), avec une traînée dont la longueur est exprimée en unités de temps — un
 TGV laisse donc mécaniquement une traînée plus longue qu'un TER, sans aucun calcul de
 vitesse.
+
+**La carte en ligne : [france-rail-traffic.pages.dev](https://france-rail-traffic.pages.dev)**, reconstruite chaque nuit.
 
 Le pipeline part des horaires GTFS ouverts de SNCF Voyageurs et de Transilien, les
 apparie au réseau ferré d'OpenStreetMap, et publie sept journées consultables. Aucune clé

@@ -4,10 +4,8 @@ name: Daily map
 # before letting the schedule take over.
 on:
   workflow_dispatch:
-  # Re-enable once a manual run has been verified end to end: an armed schedule
-  # would otherwise retry, and fail, every night.
-  # schedule:
-  #   - cron: '20 3 * * *'      # 03:20 UTC, i.e. 05:20 in Paris during summer time
+  schedule:
+    - cron: '20 3 * * *'        # 03:20 UTC, i.e. 05:20 in Paris during summer time
 
 permissions:
   contents: write   # required to publish the release asset
@@ -111,13 +109,14 @@ jobs:
         continue-on-error: true
         run: python scripts/build_window.py --corse | tee logs/window-corse.txt
 
-      # Straddling window: 3 days back, today, 3 days ahead. Everything is
-      # recomputed on every run, with nothing carried over: no silent drift is
-      # possible. Each day passes the 10 checks before being published; a failing
-      # day is set aside without taking the others down, and the workflow exits
-      # with an error to flag it.
+      # Straddling window: 1 day back, today, 5 days ahead. The feed starts the
+      # day before its publication, so asking for 3 past days silently dropped
+      # two of them. Everything is recomputed on every run, with nothing carried
+      # over: no silent drift is possible. Each day passes the 10 checks before
+      # being published; a failing day is set aside without taking the others
+      # down, and the workflow exits with an error to flag it.
       - name: Build the window of days
-        run: python scripts/build_window.py --back 3 --forward 3 | tee logs/window.txt
+        run: python scripts/build_window.py --back 1 --forward 5 | tee logs/window.txt
 
       # Reusable dataset: the routing result, not the network geometry (SNCF
       # Reseau already publishes that). Released under a fixed tag so the

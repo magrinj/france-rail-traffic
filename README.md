@@ -7,6 +7,7 @@
 
 # French rail traffic — animated over 24 hours
 
+[![site](https://img.shields.io/badge/live-france--rail--traffic.pages.dev-3b82f6.svg)](https://france-rail-traffic.pages.dev)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![data](https://img.shields.io/badge/data-ODbL-orange.svg)](#licence)
 [![Daily map](https://github.com/magrinj/france-rail-traffic/actions/workflows/carte-quotidienne.yml/badge.svg)](https://github.com/magrinj/france-rail-traffic/actions/workflows/carte-quotidienne.yml)
@@ -16,6 +17,8 @@ An animated web map of French train services, from 00:00 to 24:00. Every train i
 point that follows the **actual track geometry** (map-matched against OpenStreetMap),
 trailing a tail whose length is expressed in units of *time* — so a high-speed train
 mechanically leaves a longer trail than a regional one, with no speed calculation anywhere.
+
+**Live map: [france-rail-traffic.pages.dev](https://france-rail-traffic.pages.dev)**, rebuilt every night.
 
 The pipeline starts from the open GTFS timetables of SNCF Voyageurs and Transilien, matches
 them to the OpenStreetMap rail network, and publishes seven browsable days. No API key is
